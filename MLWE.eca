@@ -1,0 +1,147 @@
+require (*  *) DynMatrix LorR.
+require import Distr Real.
+
+clone include DynMatrix.
+
+clone include LorR with
+  type input <- vector distr * int * int
+  proof *.
+
+(* Parameters *)
+
+(* lossless noise distribution over our ring *)
+op dnoise: R distr.
+
+axiom dnoise_ll: is_lossless dnoise.
+
+(* uniform distribution over our ring *)
+op duni: R distr.
+
+axiom duni_ll  : is_lossless duni.    
+axiom duni_uni : is_uniform  duni.
+axiom duni_funi: is_funiform duni.
+axiom duni_fu  : is_full     duni.
+
+(* Additional parameters           *)
+(* Matr.ZR is the finite commutative ring we're using *)
+
+(* Adversary against the MLWE problem *)
+module type AdvMLWE = {
+  proc guess(_ : matrix * vector) : bool
+}. 
+
+(* Game 0 with proper MLWE instance *)
+module MLWE0(A:AdvMLWE) = {
+  proc main(ds, r, c) : bool = {
+    var mA, s, e, b;
+    
+    (* uniformly random r by c-matrix over our ring *)
+    mA <$ dmatrix duni r c;
+
+    (* secret vector sampled from ds *)
+    s  <$ ds;
+
+    (* error vector of length r with elements in our noise distribution *)
+    e  <$ dvector dnoise r;
+
+    (* adversary is given mA and u = mA * s + e *)
+    b  <@ A.guess(mA, mA *^ s + e);
+    return b;
+  }
+}. 
+
+(* Game 1 with uniformly random MLWE instance *)
+module MLWE1(A:AdvMLWE) = {
+  proc main(ds: vector distr, r, c) : bool = {
+    var mA, u, b;
+
+    (* uniformly random r by c-matrix over our ring *)
+    mA <$ dmatrix duni r c;
+
+    (* uniformly random vector of length r over our ring *)
+    u  <$ dvector duni r;
+
+    (* adversary is given mA and u *)
+    b  <@ A.guess(mA, u);
+    return b;
+  }
+}. 
+
+(* The DMLWE problem is to guess which game is being played *)
+module DMLWE(A:AdvMLWE) = {
+  proc main(ds, r, c) : bool = {
+    var b, b';
+    b <$ {0,1};
+    if (b) {
+      b' <@ MLWE0(A).main(ds, r, c); 
+    } else {
+      b' <@ MLWE1(A).main(ds, r, c);
+    }
+    return (b = b');
+  }
+}.
+
+(* Equivalently *)
+module DMLWE'(A:AdvMLWE) = {
+  proc main(ds, r, c) : bool = {
+    var b, b', mA, s, e, u;
+    b <$ {0,1};
+    mA <$ dmatrix duni r c;
+    if (b) {
+      s  <$ ds;
+      e  <$ dvector dnoise r;
+      u  <-  mA *^ s + e;
+    } else {
+      u  <$ dvector duni r;
+    }
+    b' <@ A.guess(mA, u);
+    return (b = b');
+  }
+}.
+
+lemma DMLWE_equiv (A <: AdvMLWE):
+    equiv[DMLWE'(A).main ~ DMLWE(A).main: ={glob A, arg} ==> ={res}].
+proof.
+proc. inline *.
+seq 1 1: (={b, glob A, ds, r, c}).
+auto.
+case (b{1}).
+rcondt{2} 1 => //.
+rcondt{1} 2. auto. wp. 
+call (: ={glob A, arg} ==> ={res}). sim. 
+auto.
+rcondf{2} 1 => //.
+rcondf{1} 2. auto. wp. 
+call (: ={glob A, arg} ==> ={res}). sim. 
+auto.
+qed.
+
+(* We now prove that the probability of distinguishing between MLWE0 and MLWE1 *)
+(* is equal to two times the adversary's advantage in the DMLWE game            *)
+lemma pr_MLWE_LR &m (A <: AdvMLWE) r c ds: 
+    islossless A.guess =>
+    `|Pr[MLWE0(A).main(ds, r, c) @ &m : res] - Pr[MLWE1(A).main(ds, r, c) @ &m : res]| =
+    2%r * `|Pr[DMLWE(A).main(ds, r, c) @ &m : res] - 1%r/2%r|.
+proof.
+move => H.
+have -> : Pr[DMLWE(A).main(ds, r, c) @ &m : res] = 
+              Pr[RandomLR(MLWE0(A), MLWE1(A)).main(ds, r, c) @ &m : res].
+byequiv => //.
+proc.
+auto.
+seq 1 1: (={b} /\ #pre).
+auto.
+if => //; 
+call (_: ={glob A, arg} ==> ={res, glob A}) => //; first sim.
+sim.
+apply (pr_AdvLR_AdvRndLR (MLWE0(A)) (MLWE1(A)) &m).
+byphoare => //.
+proc.
+call (_: true).
+auto => />.
+progress.
+apply dmatrix_ll.
+apply duni_ll.
+apply dvector_ll.
+apply duni_ll.
+qed.
